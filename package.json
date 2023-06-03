@@ -1,0 +1,38 @@
+{
+  "name": "trajapp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "package": "tauri build -t universal-apple-darwin && tauri build -t x86_64-pc-windows-msvc"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^1.3.0",
+    "@types/styled-components": "^5.1.26",
+    "gopro-telemetry": "^1.2.1",
+    "gpmf-extract": "^0.3.1",
+    "leaflet": "^1.9.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-dropzone": "^14.2.3",
+    "react-leaflet": "^4.2.1",
+    "react-player": "^2.12.0",
+    "styled-components": "^5.3.11",
+    "typescript-cubic-spline": "^1.0.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.3.1",
+    "@types/leaflet": "^1.9.3",
+    "@types/node": "^18.7.10",
+    "@types/react": "^18.0.15",
+    "@types/react-dom": "^18.0.6",
+    "@vitejs/plugin-react": "^3.0.0",
+    "typescript": "^4.9.5",
+    "vite": "^4.2.1"
+  }
+}
