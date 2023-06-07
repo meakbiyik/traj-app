@@ -13,8 +13,8 @@ import styled from "styled-components";
 import CubicSpline from "typescript-cubic-spline";
 import GPMFExtract from "gpmf-extract";
 import GoProTelemetry from "gopro-telemetry";
-import { confirm, save } from "@tauri-apps/api/dialog";
-import { writeTextFile } from "@tauri-apps/api/fs";
+import { confirm, save, open } from "@tauri-apps/api/dialog";
+import { writeTextFile, readTextFile } from "@tauri-apps/api/fs";
 import L from "leaflet";
 import MarkerRed from "/marker-red.svg";
 import MarkerGray from "/marker-gray.svg";
@@ -60,6 +60,12 @@ const SaveRequirements = styled.div`
   color: red;
   opacity: 0.5;
   font-size: 0.8em;
+`;
+
+const SeekButtons = styled.div`
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
 `;
 
 const Instructions = styled.div`
@@ -133,21 +139,25 @@ const appStateMessages = {
 const RedIcon = new L.Icon({
   iconUrl: MarkerRed,
   iconSize: [10, 10],
+  opacity: 1.0,
 });
 
 const GrayIcon = new L.Icon({
   iconUrl: MarkerGray,
   iconSize: [10, 10],
+  opacity: 1.0,
 });
 
 const GreenIcon = new L.Icon({
   iconUrl: MarkerGreen,
   iconSize: [10, 10],
+  opacity: 1.0,
 });
 
 const BlueIcon = new L.Icon({
   iconUrl: MarkerBlue,
   iconSize: [10, 10],
+  opacity: 1.0,
 });
 
 const GPSMarker = ({
@@ -155,6 +165,7 @@ const GPSMarker = ({
   value,
   isOriginal,
   currentCTS,
+  acc99Perc,
   moveMarker,
   removeMarker,
   goToCTS,
@@ -180,8 +191,18 @@ const GPSMarker = ({
     icon = BlueIcon;
   }
 
+  // clone the icon so that we can change the size and opacity
+  icon = L.icon({ ...icon.options });
+
   if (isOriginal) {
-    icon.options.iconSize = [5, 5];
+    icon.options.iconSize = [2, 2];
+    // adjust the size and opacity according to accelaration (acc)
+    // average acc is around 5e-11, max is around 1e-9 and min is 0
+    // so we map the range to sizes between 2 and 15
+    let size = 5 + (value.acc / acc99Perc) ** 3 * 7;
+    // set maximum size to 12
+    size = Math.min(size, 12);
+    icon.options.iconSize = [size, size];
   } else {
     icon.options.iconSize = [10, 10];
   }
@@ -218,7 +239,6 @@ const MapContent = ({
   if (gpsData.length === 0) return null;
   let currentPointGPS = gpsData.find((data: any) => data.cts >= currentCTS);
   if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
-  console.log(currentPointGPS);
   map.setView([currentPointGPS.lat, currentPointGPS.lng]);
 
   return (
@@ -254,13 +274,16 @@ const MapContent = ({
 const App = () => {
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number>(0);
   const [gpsData, setGpsData] = useState<
     {
       lat: number;
       lng: number;
+      acc?: number;
       cts: number;
     }[]
   >([]);
+  const [acc99Perc, setAcc99Perc] = useState<number>(0);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [currentCTS, setCurrentCTS] = useState<number>(0);
   const [splineData, setSplineData] = useState([]);
@@ -303,10 +326,45 @@ const App = () => {
     if (!confirmed) return;
     setVideoUrl(null);
     setVideoPath(null);
+    setVideoDuration(0);
+    setAcc99Perc(0);
     setGpsData([]);
     setSplineData([]);
     setMarkers([]);
     setAppState(AppState.IDLE);
+  };
+
+  const loadMarkersFromCSV = async () => {
+    const confirmed = await confirm(
+      "Are you sure you want to load markers from a CSV file? This will overwrite any existing markers.",
+      "Load Markers"
+    );
+    if (!confirmed) return;
+    open({
+      multiple: false,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    }).then(async (selected) => {
+      if (!selected) return;
+      const file = await readTextFile(selected as string);
+      const parsed = file.split("\n").map((line: string) => {
+        const [lat, lng, cts] = line.split(",");
+        return {
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
+          cts: parseInt(cts),
+        };
+      });
+      const newMarkers = parsed.map((data: any, id: number) => (
+        <GPSMarker
+          id={id}
+          value={data}
+          currentCTS={currentCTS}
+          moveMarker={handleMarkerDrag}
+          removeMarker={removeMarker}
+        />
+      ));
+      setMarkers(newMarkers);
+    });
   };
 
   const extractGpsData = async (file: any) => {
@@ -325,12 +383,39 @@ const App = () => {
             // get the first device
             const streams = telemetry[Object.keys(telemetry)[0]].streams;
             const gpsStream = streams[Object.keys(streams)[0]].samples;
-            const gpsData = gpsStream.map((sample: any) => ({
+            let gpsData = gpsStream.map((sample: any) => ({
               lat: sample.value[0],
               lng: sample.value[1],
               cts: sample.cts,
             }));
+            // subsample every 4th point
+            gpsData = gpsData.filter(
+              (data: any, i: number) => i % 4 === 0 || i === gpsData.length - 1
+            );
+            // add absolute acceleration (does not need to be in meters) as "acc" property
+            const speeds = gpsData.map((data: any, i: number) => {
+              if (i === 0) return 0;
+              const prevData = gpsData[i - 1];
+              // just estimate the distance as if it was Euclidean
+              const distance = Math.sqrt(
+                (data.lat - prevData.lat) ** 2 + (data.lng - prevData.lng) ** 2
+              );
+              const time = data.cts - prevData.cts;
+              return distance / time;
+            });
+            gpsData.forEach((data: any, i: number) => {
+              if (i === 0) {
+                data.acc = 0;
+                return;
+              }
+              data.acc = Math.abs((speeds[i] - speeds[i - 1])) / (data.cts - gpsData[i - 1].cts);
+            });
+            // sort the acc and find the 99th percentile
+            const sortedAcc = gpsData.map((data: any) => data.acc).sort((a: number, b: number) => a - b);
+            const acc99Perc = sortedAcc[Math.floor(sortedAcc.length * 0.99)];
+            setAcc99Perc(acc99Perc);
             setGpsData(gpsData);
+            setVideoDuration(gpsData[gpsData.length - 1].cts  / 1000);
             setAppState(AppState.READY);
           }
         );
@@ -473,7 +558,8 @@ const App = () => {
     // save data to the same video path except with .csv extension
     if (!videoPath) return;
     const csvPath = videoPath.replace(/\.[^/.]+$/, ".csv");
-    const csvData = splineData.map((data: any) => {
+    const csvData = markers.map((marker: any) => {
+      const data = marker.props.value;
       return `${data.lat},${data.lng},${data.cts}`;
     });
     const csvContent = csvData.join("\n");
@@ -533,6 +619,7 @@ const App = () => {
                     id={i}
                     value={value}
                     isOriginal
+                    acc99Perc={acc99Perc}
                     currentCTS={currentCTS}
                     goToCTS={goToCTS}
                   />
@@ -559,6 +646,17 @@ const App = () => {
                 {saveRequirementsAreNotMet()}
               </SaveRequirements>
             )}
+            <SeekButtons>
+              <Button onClick={() => goToCTS(0)} disabled={appState !== AppState.READY}>
+                Seek to start
+              </Button>
+              <Button onClick={() => goToCTS(videoDuration * 1000)} disabled={appState !== AppState.READY}>
+                Seek to end
+              </Button>
+              <Button onClick={loadMarkersFromCSV} disabled={appState !== AppState.READY}>
+                Load data from file
+              </Button>
+            </SeekButtons>
             <Instructions>
               <p>
                 1. Wait until the GPS points are rendered and the app state is{" "}
@@ -567,6 +665,7 @@ const App = () => {
               <p>
                 2. <b style={{ color: "gray" }}>Gray</b> and <b style={{ color: "red" }}>Red</b> markers are the original,
                 noisy GPS points. <b style={{ color: "red" }}>Red</b> markers represent points before the current video frame.
+                The size of the markers represent absolute speed change. <b>Add more markers around these points.</b>
               </p>
               <p>3. Right-click on a <b style={{ color: "gray" }}>Gray</b> marker to go to that video frame.</p>
               <p>
@@ -581,10 +680,7 @@ const App = () => {
               </p>
               <p>
                 6. Drag a <b style={{ color: "blue" }}>Blue</b> marker to move
-                it.
-              </p>
-              <p>
-                7. Right-click on a <b style={{ color: "blue" }}>Blue</b> marker
+                it. Right-click on a <b style={{ color: "blue" }}>Blue</b> marker
                 to remove it.
               </p>
               <p>
