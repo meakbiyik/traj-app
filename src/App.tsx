@@ -169,14 +169,22 @@ const GPSMarker = ({
   moveMarker,
   removeMarker,
   goToCTS,
+  setIsDragging,
 }: any) => {
   const markerEvents = {
     contextmenu: (e: any) => {
       if (isOriginal) goToCTS(value.cts);
       else removeMarker(id);
     },
+    dragstart: (e: any) => {
+      setIsDragging(true);
+    },
     dragend: (e: any) => {
       moveMarker(id, e.target.getLatLng());
+      // https://gis.stackexchange.com/questions/190049/leaflet-map-draggable-marker-events
+      setTimeout(() => {
+        setIsDragging(false);
+      }, 10);
     },
   };
 
@@ -230,10 +238,20 @@ const MapContent = ({
   splineData,
   markers,
   createMarker,
+  isDragging,
 }: any) => {
   const map = useMap();
   useMapEvents({
-    click: (e: any) => createMarker(e.latlng),
+    click: (e: any) => {
+      // only if left mouse button
+      if (e.originalEvent.button !== 0) return;
+      if (!isDragging) createMarker(e.latlng);
+    },
+    contextmenu: (e: any) => {
+      // https://gis.stackexchange.com/questions/41759/how-do-i-stop-event-propagation-with-rightclick-on-leaflet-marker
+      L.DomEvent.stopPropagation(e);
+      e.originalEvent.preventDefault();
+    },
   });
 
   if (gpsData.length === 0) return null;
@@ -250,6 +268,7 @@ const MapContent = ({
             positions={splineData.map((data: any) => [data.lat, data.lng])}
           />
           {markers.map((data: any) => {
+            if (!data) return null;
             let closestGPS = gpsData.find(
               (gps: any) => gps.cts >= data.props.value.cts
             );
@@ -287,6 +306,8 @@ const App = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [currentCTS, setCurrentCTS] = useState<number>(0);
   const [splineData, setSplineData] = useState([]);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [originalMarkers, setOriginalMarkers] = useState<any>([]);
   const [markers, setMarkers] = useState<any>([]);
   const playerRef = useRef<any>(null);
 
@@ -294,13 +315,14 @@ const App = () => {
     if (!videoPath) return "No video file selected";
     if (appState !== AppState.READY) return "App is not ready";
     // check if spline data first and last points are close enough in time to the first and last gps points
-    if (splineData.length <= 2) return "Not enough datapoints (less than 3 points)";
+    if (splineData.length <= 2)
+      return "Not enough datapoints (less than 3 points)";
     const times = splineData.map((data: any) => data.cts);
     const maxSplineCts = Math.max(...times);
     const minSplineCts = Math.min(...times);
     if (
-      gpsData[gpsData.length - 1].cts - maxSplineCts > 100 ||
-      minSplineCts - gpsData[0].cts > 100
+      gpsData[gpsData.length - 1].cts - maxSplineCts > 1000 ||
+      minSplineCts - gpsData[0].cts > 1000
     ) {
       return "New datapoints should cover the whole video, including the first and last GPS points. Seek to the beginning and end of the video and add new markers.";
     }
@@ -361,6 +383,7 @@ const App = () => {
           currentCTS={currentCTS}
           moveMarker={handleMarkerDrag}
           removeMarker={removeMarker}
+          setIsDragging={setIsDragging}
         />
       ));
       setMarkers(newMarkers);
@@ -383,14 +406,19 @@ const App = () => {
             // get the first device
             const streams = telemetry[Object.keys(telemetry)[0]].streams;
             const gpsStream = streams[Object.keys(streams)[0]].samples;
-            let gpsData = gpsStream.map((sample: any) => ({
-              lat: sample.value[0],
-              lng: sample.value[1],
-              cts: sample.cts,
-            }));
-            // subsample every 4th point
-            gpsData = gpsData.filter(
-              (data: any, i: number) => i % 4 === 0 || i === gpsData.length - 1
+            const gpsData = gpsStream.reduce(
+              (acc: any, sample: any, idx: number) => {
+                // subsample every 4th point
+                if (idx % 4 !== 0 || idx === gpsStream.length - 1) {
+                  acc.push({
+                    lat: sample.value[0],
+                    lng: sample.value[1],
+                    cts: sample.cts,
+                  });
+                }
+                return acc;
+              },
+              []
             );
             // add absolute acceleration (does not need to be in meters) as "acc" property
             const speeds = gpsData.map((data: any, i: number) => {
@@ -408,14 +436,18 @@ const App = () => {
                 data.acc = 0;
                 return;
               }
-              data.acc = Math.abs((speeds[i] - speeds[i - 1])) / (data.cts - gpsData[i - 1].cts);
+              data.acc =
+                Math.abs(speeds[i] - speeds[i - 1]) /
+                (data.cts - gpsData[i - 1].cts);
             });
             // sort the acc and find the 99th percentile
-            const sortedAcc = gpsData.map((data: any) => data.acc).sort((a: number, b: number) => a - b);
+            const sortedAcc = gpsData
+              .map((data: any) => data.acc)
+              .sort((a: number, b: number) => a - b);
             const acc99Perc = sortedAcc[Math.floor(sortedAcc.length * 0.99)];
             setAcc99Perc(acc99Perc);
             setGpsData(gpsData);
-            setVideoDuration(gpsData[gpsData.length - 1].cts  / 1000);
+            setVideoDuration(gpsData[gpsData.length - 1].cts / 1000);
             setAppState(AppState.READY);
           }
         );
@@ -428,19 +460,18 @@ const App = () => {
 
   const onVideoProgress = useCallback(
     (playedSeconds: number) => {
-      setCurrentCTS(playedSeconds * 1000);
+      setCurrentCTS(Math.round(playedSeconds * 1000));
     },
     [setCurrentCTS]
   );
 
   const goToCTS = useCallback(
     (cts: number) => {
-      setCurrentCTS(cts);
       if (playerRef.current) {
         playerRef.current.seekTo(cts / 1000, "seconds");
       }
     },
-    [setCurrentCTS, playerRef.current]
+    [playerRef.current]
   );
 
   const generateSpline = (values: any, targets: any) => {
@@ -483,20 +514,41 @@ const App = () => {
   useEffect(() => {
     if (!markers.length || !gpsData.length) return;
     let splinePoints = [];
-    if (markers.length >= 2) {
+    const cleanMarkers = markers.filter((marker: any) => marker);
+    if (cleanMarkers.length >= 2) {
       splinePoints = generateSpline(
-        markers.map((data: any) => data.props.value),
+        cleanMarkers.map((data: any) => data.props.value),
         gpsData.map((data: any) => data.cts)
       );
     }
     setSplineData(splinePoints as any);
   }, [markers, gpsData]);
 
+  useEffect(() => {
+    setOriginalMarkers(
+      gpsData.map((value, i) => (
+        <GPSMarker
+          key={i}
+          id={i}
+          value={value}
+          isOriginal
+          acc99Perc={acc99Perc}
+          currentCTS={currentCTS}
+          goToCTS={goToCTS}
+        />
+      ))
+    );
+  }, [currentCTS, gpsData, goToCTS]);
+
   const removeMarker = useCallback(
     (id: number) => {
       setMarkers((prevMarkers: any) => {
         const newMarkers = [...prevMarkers];
-        newMarkers.splice(id, 1);
+        // ensure that the id that is being removed is the same as the id of the marker
+        if (!newMarkers[id]) return newMarkers;
+        if (newMarkers[id].props.id !== id) return newMarkers;
+        // NOT splice, as we want to preserve the order
+        delete newMarkers[id];
         return newMarkers;
       });
     },
@@ -507,6 +559,8 @@ const App = () => {
     (id: number, position: any) => {
       setMarkers((prevMarkers: any) => {
         const newMarkers = [...prevMarkers];
+        const marker = newMarkers[id];
+        if (!marker) return newMarkers;
         const value = {
           lat: position.lat,
           lng: position.lng,
@@ -519,46 +573,51 @@ const App = () => {
             currentCTS={currentCTS}
             moveMarker={handleMarkerDrag}
             removeMarker={removeMarker}
+            setIsDragging={setIsDragging}
           />
         );
         return newMarkers;
       });
     },
-    [markers, currentCTS, setMarkers]
+    [currentCTS, setMarkers]
   );
 
   const createMarker = useCallback(
     (position: any) => {
-      const value = {
-        lat: position.lat,
-        lng: position.lng,
-        cts: currentCTS,
-      };
-      const idx = markers.findIndex(
-        (data: any) => data.props.value.cts === currentCTS
-      );
-      const id = idx !== -1 ? idx : markers.length;
-      const newMarker = (
-        <GPSMarker
-          id={id}
-          value={value}
-          currentCTS={currentCTS}
-          moveMarker={handleMarkerDrag}
-          removeMarker={removeMarker}
-        />
-      );
-      const newMarkers = [...markers];
-      newMarkers[id] = newMarker;
-      setMarkers(newMarkers);
+      setMarkers((prevMarkers: any) => {
+        const value = {
+          lat: position.lat,
+          lng: position.lng,
+          cts: currentCTS,
+        };
+        const idx = prevMarkers.findIndex(
+          (data: any) => data && data.props.value.cts === currentCTS
+        );
+        const id = idx !== -1 ? idx : prevMarkers.length;
+        const newMarker = (
+          <GPSMarker
+            id={id}
+            value={value}
+            currentCTS={currentCTS}
+            moveMarker={handleMarkerDrag}
+            removeMarker={removeMarker}
+            setIsDragging={setIsDragging}
+          />
+        );
+        const newMarkers = [...prevMarkers];
+        newMarkers[id] = newMarker;
+        return newMarkers;
+      });
     },
-    [markers, currentCTS, setMarkers, handleMarkerDrag, removeMarker]
+    [currentCTS, setMarkers, handleMarkerDrag, removeMarker]
   );
 
   const saveData = () => {
     // save data to the same video path except with .csv extension
     if (!videoPath) return;
+    const cleanMarkers = markers.filter((marker: any) => marker);
     const csvPath = videoPath.replace(/\.[^/.]+$/, ".csv");
-    const csvData = markers.map((marker: any) => {
+    const csvData = cleanMarkers.map((marker: any) => {
       const data = marker.props.value;
       return `${data.lat},${data.lng},${data.cts}`;
     });
@@ -611,25 +670,16 @@ const App = () => {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
                   maxNativeZoom={19}
-                  maxZoom={21}
+                  maxZoom={23}
                 />
-                {gpsData.map((value, i) => (
-                  <GPSMarker
-                    key={i}
-                    id={i}
-                    value={value}
-                    isOriginal
-                    acc99Perc={acc99Perc}
-                    currentCTS={currentCTS}
-                    goToCTS={goToCTS}
-                  />
-                ))}
+                {originalMarkers}
                 <MapContent
                   currentCTS={currentCTS}
                   gpsData={gpsData}
                   splineData={splineData}
                   markers={markers}
                   createMarker={createMarker}
+                  isDragging={isDragging}
                 />
               </MapContainer>
             </MapWrapper>
@@ -642,18 +692,25 @@ const App = () => {
               Save Data
             </Button>
             {!!saveRequirementsAreNotMet() && (
-              <SaveRequirements>
-                {saveRequirementsAreNotMet()}
-              </SaveRequirements>
+              <SaveRequirements>{saveRequirementsAreNotMet()}</SaveRequirements>
             )}
             <SeekButtons>
-              <Button onClick={() => goToCTS(0)} disabled={appState !== AppState.READY}>
+              <Button
+                onClick={() => goToCTS(0)}
+                disabled={appState !== AppState.READY}
+              >
                 Seek to start
               </Button>
-              <Button onClick={() => goToCTS(videoDuration * 1000)} disabled={appState !== AppState.READY}>
+              <Button
+                onClick={() => goToCTS(videoDuration * 1000)}
+                disabled={appState !== AppState.READY}
+              >
                 Seek to end
               </Button>
-              <Button onClick={loadMarkersFromCSV} disabled={appState !== AppState.READY}>
+              <Button
+                onClick={loadMarkersFromCSV}
+                disabled={appState !== AppState.READY}
+              >
                 Load data from file
               </Button>
             </SeekButtons>
@@ -663,11 +720,17 @@ const App = () => {
                 <b style={{ color: "green" }}>Ready</b>.
               </p>
               <p>
-                2. <b style={{ color: "gray" }}>Gray</b> and <b style={{ color: "red" }}>Red</b> markers are the original,
-                noisy GPS points. <b style={{ color: "red" }}>Red</b> markers represent points before the current video frame.
-                The size of the markers represent absolute speed change. <b>Add more markers around these points.</b>
+                2. <b style={{ color: "gray" }}>Gray</b> and{" "}
+                <b style={{ color: "red" }}>Red</b> markers are the original,
+                noisy GPS points. <b style={{ color: "red" }}>Red</b> markers
+                represent points before the current video frame. The size of the
+                markers represent absolute speed change.{" "}
+                <b>Add more markers around these points.</b>
               </p>
-              <p>3. Right-click on a <b style={{ color: "gray" }}>Gray</b> marker to go to that video frame.</p>
+              <p>
+                3. Right-click on a <b style={{ color: "gray" }}>Gray</b> marker
+                to go to that video frame.
+              </p>
               <p>
                 4. Click on the map to add a{" "}
                 <b style={{ color: "blue" }}>Blue</b> marker for the current
@@ -680,8 +743,8 @@ const App = () => {
               </p>
               <p>
                 6. Drag a <b style={{ color: "blue" }}>Blue</b> marker to move
-                it. Right-click on a <b style={{ color: "blue" }}>Blue</b> marker
-                to remove it.
+                it. Right-click on a <b style={{ color: "blue" }}>Blue</b>{" "}
+                marker to remove it.
               </p>
               <p>
                 8. After adding enough markers, click <b>Save Data</b> to save
