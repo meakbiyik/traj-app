@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, memo } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import ReactPlayer from "react-player";
 import {
   MapContainer,
@@ -16,10 +16,25 @@ import GoProTelemetry from "gopro-telemetry";
 import { confirm, save, open } from "@tauri-apps/api/dialog";
 import { writeTextFile, readTextFile } from "@tauri-apps/api/fs";
 import L from "leaflet";
-import MarkerRed from "/marker-red.svg";
-import MarkerGray from "/marker-gray.svg";
-import MarkerGreen from "/marker-green.svg";
-import MarkerBlue from "/marker-blue.svg";
+import MarkerRed from "../public/marker-red.svg";
+import MarkerGray from "../public/marker-gray.svg";
+import MarkerBlue from "../public/marker-blue.svg";
+
+enum AppState {
+  IDLE,
+  VIDEO_LOADING,
+  GPS_LOADING,
+  READY,
+  ERROR,
+}
+
+const appStateMessages = {
+  [AppState.IDLE]: "Drop a video file here to get started",
+  [AppState.VIDEO_LOADING]: "Loading video...",
+  [AppState.GPS_LOADING]: "Extracting GPS data...",
+  [AppState.READY]: "Ready",
+  [AppState.ERROR]: "Error",
+};
 
 const Container = styled.div`
   margin: 0;
@@ -120,28 +135,12 @@ const MarkerWrapper = styled.div`
   cursor: none;
 `;
 
-enum AppState {
-  IDLE,
-  VIDEO_LOADING,
-  GPS_LOADING,
-  READY,
-  ERROR,
-}
-
-const appStateMessages = {
-  [AppState.IDLE]: "Drop a video file here to get started",
-  [AppState.VIDEO_LOADING]: "Loading video...",
-  [AppState.GPS_LOADING]: "Extracting GPS data...",
-  [AppState.READY]: "Ready",
-  [AppState.ERROR]: "Error",
-};
-
 const Icon = new L.Icon({
   iconUrl: MarkerGray,
   iconSize: [10, 10],
 });
 
-const GPSMarker = ({
+function GPSMarker({
   id,
   value,
   isOriginal,
@@ -151,7 +150,7 @@ const GPSMarker = ({
   removeMarker,
   goToCTS,
   setIsDragging,
-}: any) => {
+}: any) {
   // clone the icon so that we can change the size
   const icon = L.icon({ ...Icon.options, iconUrl: color });
 
@@ -169,11 +168,11 @@ const GPSMarker = ({
   }
 
   const markerEvents = {
-    contextmenu: (e: any) => {
+    contextmenu: () => {
       if (isOriginal) goToCTS(value.cts);
       else removeMarker(id);
     },
-    dragstart: (e: any) => {
+    dragstart: () => {
       setIsDragging(true);
     },
     dragend: (e: any) => {
@@ -200,16 +199,16 @@ const GPSMarker = ({
       />
     </MarkerWrapper>
   );
-};
+}
 
-const MapContent = ({
+function MapContent({
   currentCTS,
   gpsData,
   splineData,
   markers,
   createMarker,
   isDragging,
-}: any) => {
+}: any) {
   const map = useMap();
   useMapEvents({
     click: (e: any) => {
@@ -224,13 +223,14 @@ const MapContent = ({
     },
   });
 
-  if (gpsData.length === 0) return null;
-
   useEffect(() => {
+    if (gpsData.length === 0) return;
     let currentPointGPS = gpsData.find((data: any) => data.cts >= currentCTS);
     if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
     map.setView([currentPointGPS.lat, currentPointGPS.lng]);
-  }, [currentCTS]);
+  }, [currentCTS, gpsData]);
+
+  if (gpsData.length === 0) return null;
 
   // Although we fit the spline for all points, we do not render the cubic
   // spline for last two and first two points to prevent rendering
@@ -303,9 +303,9 @@ const MapContent = ({
       {markers}
     </>
   );
-};
+}
 
-const App = () => {
+function App() {
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoDuration, setVideoDuration] = useState<number>(0);
@@ -419,7 +419,7 @@ const App = () => {
           },
           (telemetry: any) => {
             // get the first device
-            const streams = telemetry[Object.keys(telemetry)[0]].streams;
+            const { streams } = telemetry[Object.keys(telemetry)[0]];
             const gpsStream = streams[Object.keys(streams)[0]].samples;
             const gpsData = gpsStream.reduce(
               (acc: any, sample: any, idx: number) => {
@@ -785,6 +785,6 @@ const App = () => {
       )}
     </Container>
   );
-};
+}
 
 export default App;
