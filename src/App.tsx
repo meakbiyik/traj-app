@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, memo } from "react";
 import ReactPlayer from "react-player";
 import {
   MapContainer,
@@ -136,41 +136,38 @@ const appStateMessages = {
   [AppState.ERROR]: "Error",
 };
 
-const RedIcon = new L.Icon({
-  iconUrl: MarkerRed,
-  iconSize: [10, 10],
-  opacity: 1.0,
-});
-
-const GrayIcon = new L.Icon({
+const Icon = new L.Icon({
   iconUrl: MarkerGray,
   iconSize: [10, 10],
-  opacity: 1.0,
-});
-
-const GreenIcon = new L.Icon({
-  iconUrl: MarkerGreen,
-  iconSize: [10, 10],
-  opacity: 1.0,
-});
-
-const BlueIcon = new L.Icon({
-  iconUrl: MarkerBlue,
-  iconSize: [10, 10],
-  opacity: 1.0,
 });
 
 const GPSMarker = ({
   id,
   value,
   isOriginal,
-  currentCTS,
+  color,
   acc99Perc,
   moveMarker,
   removeMarker,
   goToCTS,
   setIsDragging,
 }: any) => {
+  // clone the icon so that we can change the size
+  const icon = L.icon({ ...Icon.options, iconUrl: color });
+
+  if (isOriginal) {
+    icon.options.iconSize = [2, 2];
+    // adjust the size according to accelaration (acc)
+    // average acc is around 5e-11, max is around 1e-9 and min is 0
+    // so we map the range to sizes between 2 and 15
+    let size = 5 + (value.acc / acc99Perc) ** 3 * 7;
+    // set maximum size to 12
+    size = Math.min(size, 12);
+    icon.options.iconSize = [size, size];
+  } else {
+    icon.options.iconSize = [10, 10];
+  }
+
   const markerEvents = {
     contextmenu: (e: any) => {
       if (isOriginal) goToCTS(value.cts);
@@ -187,33 +184,6 @@ const GPSMarker = ({
       }, 10);
     },
   };
-
-  let icon;
-  if (isOriginal) {
-    if (value.cts <= currentCTS) {
-      icon = RedIcon;
-    } else {
-      icon = GrayIcon;
-    }
-  } else {
-    icon = BlueIcon;
-  }
-
-  // clone the icon so that we can change the size and opacity
-  icon = L.icon({ ...icon.options });
-
-  if (isOriginal) {
-    icon.options.iconSize = [2, 2];
-    // adjust the size and opacity according to accelaration (acc)
-    // average acc is around 5e-11, max is around 1e-9 and min is 0
-    // so we map the range to sizes between 2 and 15
-    let size = 5 + (value.acc / acc99Perc) ** 3 * 7;
-    // set maximum size to 12
-    size = Math.min(size, 12);
-    icon.options.iconSize = [size, size];
-  } else {
-    icon.options.iconSize = [10, 10];
-  }
 
   const position = {
     lng: value.lng,
@@ -255,36 +225,81 @@ const MapContent = ({
   });
 
   if (gpsData.length === 0) return null;
-  let currentPointGPS = gpsData.find((data: any) => data.cts >= currentCTS);
-  if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
-  map.setView([currentPointGPS.lat, currentPointGPS.lng]);
+
+  useEffect(() => {
+    let currentPointGPS = gpsData.find((data: any) => data.cts >= currentCTS);
+    if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
+    map.setView([currentPointGPS.lat, currentPointGPS.lng]);
+  }, [currentCTS]);
+
+  // Although we fit the spline for all points, we do not render the cubic
+  // spline for last two and first two points to prevent rendering
+  // edge effects. Instead, we render a line at those ranges.
+  const cleanMarkerVals: any = markers
+    .filter((marker: any) => marker)
+    .map((marker: any) => marker.props.value)
+    .sort((a: any, b: any) => a.cts - b.cts);
+
+  const splinePositions = splineData
+    .filter(
+      (data: any) =>
+        data.cts > cleanMarkerVals[1].cts &&
+        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts
+    )
+    .map((data: any) => [data.lat, data.lng]);
 
   return (
     <>
-      {splineData && (
+      {splineData && cleanMarkerVals.length > 1 && (
         <>
+          {/* render the spline for all points except the first and last two */}
+          {cleanMarkerVals.length > 3 && (
+            <Polyline
+              pathOptions={{ color: "green" }}
+              positions={splinePositions}
+            />
+          )}
+          {/* render a line for the first/last two points */}
           <Polyline
             pathOptions={{ color: "green" }}
-            positions={splineData.map((data: any) => [data.lat, data.lng])}
+            positions={[
+              [cleanMarkerVals[0].lat, cleanMarkerVals[0].lng],
+              [cleanMarkerVals[1].lat, cleanMarkerVals[1].lng],
+            ]}
           />
-          {markers.map((data: any) => {
-            if (!data) return null;
-            let closestGPS = gpsData.find(
-              (gps: any) => gps.cts >= data.props.value.cts
-            );
-            if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
-            return (
-              <Polyline
-                pathOptions={{ color: "blue", dashArray: "10, 10" }}
-                positions={[
-                  [data.props.value.lat, data.props.value.lng],
-                  [closestGPS.lat, closestGPS.lng],
-                ]}
-              />
-            );
-          })}
+          {cleanMarkerVals.length > 2 && (
+            <Polyline
+              pathOptions={{ color: "green" }}
+              positions={[
+                [
+                  cleanMarkerVals[cleanMarkerVals.length - 2].lat,
+                  cleanMarkerVals[cleanMarkerVals.length - 2].lng,
+                ],
+                [
+                  cleanMarkerVals[cleanMarkerVals.length - 1].lat,
+                  cleanMarkerVals[cleanMarkerVals.length - 1].lng,
+                ],
+              ]}
+            />
+          )}
         </>
       )}
+      {markers.map((data: any) => {
+        if (!data) return null;
+        let closestGPS = gpsData.find(
+          (gps: any) => gps.cts >= data.props.value.cts
+        );
+        if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
+        return (
+          <Polyline
+            pathOptions={{ color: "blue", dashArray: "10, 10" }}
+            positions={[
+              [data.props.value.lat, data.props.value.lng],
+              [closestGPS.lat, closestGPS.lng],
+            ]}
+          />
+        );
+      })}
       {markers}
     </>
   );
@@ -321,8 +336,8 @@ const App = () => {
     const maxSplineCts = Math.max(...times);
     const minSplineCts = Math.min(...times);
     if (
-      gpsData[gpsData.length - 1].cts - maxSplineCts > 1000 ||
-      minSplineCts - gpsData[0].cts > 1000
+      gpsData[gpsData.length - 1].cts - maxSplineCts > 10000 ||
+      minSplineCts - gpsData[0].cts > 10000
     ) {
       return "New datapoints should cover the whole video, including the first and last GPS points. Seek to the beginning and end of the video and add new markers.";
     }
@@ -380,10 +395,10 @@ const App = () => {
         <GPSMarker
           id={id}
           value={data}
-          currentCTS={currentCTS}
           moveMarker={handleMarkerDrag}
           removeMarker={removeMarker}
           setIsDragging={setIsDragging}
+          color={MarkerBlue}
         />
       ));
       setMarkers(newMarkers);
@@ -525,19 +540,32 @@ const App = () => {
   }, [markers, gpsData]);
 
   useEffect(() => {
-    setOriginalMarkers(
-      gpsData.map((value, i) => (
-        <GPSMarker
-          key={i}
-          id={i}
-          value={value}
-          isOriginal
-          acc99Perc={acc99Perc}
-          currentCTS={currentCTS}
-          goToCTS={goToCTS}
-        />
-      ))
-    );
+    setOriginalMarkers((prevMarkers: any) => {
+      const newMarkers = [...prevMarkers];
+      gpsData.map((value, i) => {
+        let color;
+        if (value.cts <= currentCTS) {
+          color = MarkerRed;
+        } else {
+          color = MarkerGray;
+        }
+        // check if color prop changed
+        if (!newMarkers[i] || newMarkers[i].props.color !== color) {
+          newMarkers[i] = (
+            <GPSMarker
+              key={i}
+              id={i}
+              value={value}
+              isOriginal
+              acc99Perc={acc99Perc}
+              goToCTS={goToCTS}
+              color={color}
+            />
+          );
+        }
+      });
+      return newMarkers;
+    });
   }, [currentCTS, gpsData, goToCTS]);
 
   const removeMarker = useCallback(
@@ -570,10 +598,10 @@ const App = () => {
           <GPSMarker
             id={id}
             value={value}
-            currentCTS={currentCTS}
             moveMarker={handleMarkerDrag}
             removeMarker={removeMarker}
             setIsDragging={setIsDragging}
+            color={MarkerBlue}
           />
         );
         return newMarkers;
@@ -598,10 +626,10 @@ const App = () => {
           <GPSMarker
             id={id}
             value={value}
-            currentCTS={currentCTS}
             moveMarker={handleMarkerDrag}
             removeMarker={removeMarker}
             setIsDragging={setIsDragging}
+            color={MarkerBlue}
           />
         );
         const newMarkers = [...prevMarkers];
