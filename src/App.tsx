@@ -405,6 +405,34 @@ function App() {
     });
   };
 
+  const snapMarkers = async () => {
+    const confirmed = await confirm(
+      "Are you sure you want snap the markers? This will change the temporal position of the markers.",
+      "Snap Markers"
+    );
+    if (!confirmed) return;
+    setMarkers((prevMarkers: any) => {
+      const newMarkers = [...prevMarkers];
+      newMarkers.forEach((marker: any) => {
+        if (!marker) return;
+        const value = marker.props.value;
+        const distances = gpsData.map((gps: any) => {
+          return Math.sqrt(
+            (gps.lat - value.lat) ** 2 + (gps.lng - value.lng) ** 2
+          );
+        });
+        const minimumDistance = Math.min(...distances);
+        // We don't snap if the closest point is more than 5 meters away
+        // this is of course an approximation, but it's good enough
+        if (minimumDistance * 6371000 * 3.1415 / 180 > 5) return;
+        const closestGPS = gpsData[distances.indexOf(minimumDistance)];
+        if (!closestGPS) return;
+        value.cts = closestGPS.cts;
+      });
+      return newMarkers;
+    });
+  };
+
   const extractGpsData = async (file: any) => {
     setAppState(AppState.VIDEO_LOADING);
     return GPMFExtract(file, {
@@ -738,8 +766,16 @@ function App() {
               <Button
                 onClick={loadMarkersFromCSV}
                 disabled={appState !== AppState.READY}
+                title="Load markers from a CSV file. This will overwrite any existing markers."
               >
-                Load data from file
+                Load from file
+              </Button>
+              <Button
+                onClick={snapMarkers}
+                disabled={appState !== AppState.READY}
+                title="Temporally snap the added (blue) markers to the closest GPS point"
+              >
+                Snap to GPS
               </Button>
             </SeekButtons>
             <Instructions>
