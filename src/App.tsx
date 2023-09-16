@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import ReactPlayer from "react-player";
 import {
   MapContainer,
@@ -8,14 +8,14 @@ import {
   useMap,
   Polyline,
 } from "react-leaflet";
-import { useDropzone } from "react-dropzone";
+import { useDropzone, FileWithPath } from "react-dropzone";
 import styled from "styled-components";
 import CubicSpline from "typescript-cubic-spline";
 import GPMFExtract from "gpmf-extract";
 import GoProTelemetry from "gopro-telemetry";
 import { confirm, save, open } from "@tauri-apps/api/dialog";
 import { writeTextFile, readTextFile } from "@tauri-apps/api/fs";
-import L from "leaflet";
+import L, { DragEndEvent, LatLng, LeafletMouseEvent } from "leaflet";
 import MarkerRed from "../public/marker-red.svg";
 import MarkerGray from "../public/marker-gray.svg";
 import MarkerBlue from "../public/marker-blue.svg";
@@ -27,6 +27,13 @@ enum AppState {
   READY,
   ERROR,
 }
+
+type GPSMarkerData = {
+  lat: number;
+  lng: number;
+  cts: number;
+  acc?: number;
+};
 
 const appStateMessages = {
   [AppState.IDLE]: "Drop a video file here to get started",
@@ -118,6 +125,8 @@ const AppStateIndicator = styled.div`
         return "green";
       case AppState.ERROR:
         return "red";
+      default:
+        return "black";
     }
   }};
 `;
@@ -140,17 +149,45 @@ const Icon = new L.Icon({
   iconSize: [10, 10],
 });
 
+type GPSMarkerProps = {
+  id: number;
+  value: GPSMarkerData;
+  isOriginal?: boolean;
+  color: string;
+  acc99Perc?: number;
+  moveMarker?: (id: number, position: LatLng) => void;
+  removeMarker?: (id: number) => void;
+  goToCTS?: (cts: number) => void;
+  setIsDragging?: (isDragging: boolean) => void;
+};
+
 function GPSMarker({
   id,
   value,
-  isOriginal,
+  isOriginal = false,
   color,
-  acc99Perc,
-  moveMarker,
-  removeMarker,
-  goToCTS,
-  setIsDragging,
-}: any) {
+  acc99Perc = 0,
+  moveMarker = () => {},
+  removeMarker = () => {},
+  goToCTS = () => {},
+  setIsDragging = () => {},
+}: GPSMarkerProps) {
+  if (isOriginal) {
+    if (acc99Perc === undefined || value.acc === undefined)
+      throw new Error(
+        "acc99Perc or value.acc is undefined despite being original"
+      );
+    if (goToCTS === undefined)
+      throw new Error("goToCTS is undefined despite being original");
+  } else if (
+    moveMarker === undefined ||
+    removeMarker === undefined ||
+    setIsDragging === undefined
+  )
+    throw new Error(
+      "moveMarker, removeMarker or setIsDragging is undefined despite not being original"
+    );
+
   // clone the icon so that we can change the size
   const icon = L.icon({ ...Icon.options, iconUrl: color });
 
@@ -159,7 +196,8 @@ function GPSMarker({
     // adjust the size according to accelaration (acc)
     // average acc is around 5e-11, max is around 1e-9 and min is 0
     // so we map the range to sizes between 2 and 15
-    let size = 5 + (value.acc / acc99Perc) ** 3 * 7;
+    const acc = value.acc || 0;
+    let size = 5 + (acc / acc99Perc) ** 3 * 7;
     // set maximum size to 12
     size = Math.min(size, 12);
     icon.options.iconSize = [size, size];
@@ -175,7 +213,7 @@ function GPSMarker({
     dragstart: () => {
       setIsDragging(true);
     },
-    dragend: (e: any) => {
+    dragend: (e: DragEndEvent) => {
       moveMarker(id, e.target.getLatLng());
       // https://gis.stackexchange.com/questions/190049/leaflet-map-draggable-marker-events
       setTimeout(() => {
@@ -208,15 +246,22 @@ function MapContent({
   markers,
   createMarker,
   isDragging,
-}: any) {
+}: {
+  currentCTS: number;
+  gpsData: GPSMarkerData[];
+  splineData: GPSMarkerData[];
+  markers: React.ReactElement<GPSMarkerProps>[];
+  createMarker: (position: LatLng) => void;
+  isDragging: boolean;
+}) {
   const map = useMap();
   useMapEvents({
-    click: (e: any) => {
+    click: (e: LeafletMouseEvent) => {
       // only if left mouse button
       if (e.originalEvent.button !== 0) return;
       if (!isDragging) createMarker(e.latlng);
     },
-    contextmenu: (e: any) => {
+    contextmenu: (e: LeafletMouseEvent) => {
       // https://gis.stackexchange.com/questions/41759/how-do-i-stop-event-propagation-with-rightclick-on-leaflet-marker
       L.DomEvent.stopPropagation(e);
       e.originalEvent.preventDefault();
@@ -225,28 +270,30 @@ function MapContent({
 
   useEffect(() => {
     if (gpsData.length === 0) return;
-    let currentPointGPS = gpsData.find((data: any) => data.cts >= currentCTS);
+    let currentPointGPS = gpsData.find(
+      (data: GPSMarkerData) => data.cts >= currentCTS
+    );
     if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
     map.setView([currentPointGPS.lat, currentPointGPS.lng]);
-  }, [currentCTS, gpsData]);
+  }, [currentCTS, gpsData, map]);
 
   if (gpsData.length === 0) return null;
 
   // Although we fit the spline for all points, we do not render the cubic
   // spline for last two and first two points to prevent rendering
   // edge effects. Instead, we render a line at those ranges.
-  const cleanMarkerVals: any = markers
-    .filter((marker: any) => marker)
-    .map((marker: any) => marker.props.value)
-    .sort((a: any, b: any) => a.cts - b.cts);
+  const cleanMarkerVals = markers
+    .filter((marker) => marker)
+    .map((marker) => marker.props.value)
+    .sort((a, b) => a.cts - b.cts);
 
   const splinePositions = splineData
     .filter(
-      (data: any) =>
+      (data) =>
         data.cts > cleanMarkerVals[1].cts &&
         data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts
     )
-    .map((data: any) => [data.lat, data.lng]);
+    .map((data): L.LatLngExpression => [data.lat, data.lng]);
 
   return (
     <>
@@ -284,11 +331,9 @@ function MapContent({
           )}
         </>
       )}
-      {markers.map((data: any) => {
+      {markers.map((data) => {
         if (!data) return null;
-        let closestGPS = gpsData.find(
-          (gps: any) => gps.cts >= data.props.value.cts
-        );
+        let closestGPS = gpsData.find((gps) => gps.cts >= data.props.value.cts);
         if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
         return (
           <Polyline
@@ -320,11 +365,15 @@ function App() {
   const [acc99Perc, setAcc99Perc] = useState<number>(0);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [currentCTS, setCurrentCTS] = useState<number>(0);
-  const [splineData, setSplineData] = useState([]);
+  const [splineData, setSplineData] = useState<GPSMarkerData[]>([]);
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [originalMarkers, setOriginalMarkers] = useState<any>([]);
-  const [markers, setMarkers] = useState<any>([]);
-  const playerRef = useRef<any>(null);
+  const [originalMarkers, setOriginalMarkers] = useState<
+    React.ReactElement<GPSMarkerProps>[]
+  >([]);
+  const [markers, setMarkers] = useState<React.ReactElement<GPSMarkerProps>[]>(
+    []
+  );
+  const playerRef = useRef<ReactPlayer>(null);
 
   const saveRequirementsAreNotMet = useCallback(() => {
     if (!videoPath) return "No video file selected";
@@ -332,7 +381,7 @@ function App() {
     // check if spline data first and last points are close enough in time to the first and last gps points
     if (splineData.length <= 2)
       return "Not enough datapoints (less than 3 points)";
-    const times = splineData.map((data: any) => data.cts);
+    const times = splineData.map((data) => data.cts);
     const maxSplineCts = Math.max(...times);
     const minSplineCts = Math.min(...times);
     if (
@@ -344,8 +393,93 @@ function App() {
     return false;
   }, [videoPath, appState, splineData, gpsData]);
 
+  const extractGpsData = async (file: File) => {
+    setAppState(AppState.VIDEO_LOADING);
+    return GPMFExtract(file, {
+      browserMode: true,
+    })
+      .then((extracted) => {
+        setAppState(AppState.GPS_LOADING);
+        return GoProTelemetry(
+          extracted,
+          {
+            stream: ["GPS"],
+          },
+          (telemetry) => {
+            // get the first device
+            const { streams } =
+              telemetry[
+                Object.keys(telemetry)[0] as unknown as keyof typeof telemetry
+              ];
+            const gpsStream =
+              streams[Object.keys(streams)[0] as keyof typeof streams];
+            if (!gpsStream) {
+              // eslint-disable-next-line no-console
+              console.error("No GPS data found");
+              setAppState(AppState.ERROR);
+              return;
+            }
+            const gpsStreamSamples = gpsStream.samples;
+            let rawGpsData: GPSMarkerData[] = gpsStreamSamples.reduce(
+              (acc: GPSMarkerData[], sample, idx: number) => {
+                // subsample every 4th point
+                if (idx % 4 !== 0 || idx === gpsStreamSamples.length - 1) {
+                  acc.push({
+                    lat: sample.value[0],
+                    lng: sample.value[1],
+                    cts: sample.cts,
+                  });
+                }
+                return acc;
+              },
+              []
+            );
+            // add absolute acceleration (does not need to be in meters) as "acc" property
+            const speeds = rawGpsData.map((data: GPSMarkerData, i: number) => {
+              if (i === 0) return 0;
+              const prevData = rawGpsData[i - 1];
+              // just estimate the distance as if it was Euclidean
+              const distance = Math.sqrt(
+                (data.lat - prevData.lat) ** 2 + (data.lng - prevData.lng) ** 2
+              );
+              const time = data.cts - prevData.cts;
+              return distance / time;
+            });
+            rawGpsData = rawGpsData.map((data: GPSMarkerData, i: number) => {
+              const dataWithAcc = { ...data };
+              if (i === 0) {
+                dataWithAcc.acc = 0;
+              } else {
+                dataWithAcc.acc =
+                  Math.abs(speeds[i] - speeds[i - 1]) /
+                  (data.cts - rawGpsData[i - 1].cts);
+              }
+              return dataWithAcc;
+            });
+            // sort the acc and find the 99th percentile
+            const sortedAcc = rawGpsData
+              .map((data: GPSMarkerData) => data.acc)
+              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+              .sort((a, b) => a! - b!);
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            setAcc99Perc(sortedAcc[Math.floor(sortedAcc.length * 0.99)]!);
+            setGpsData(rawGpsData);
+            setVideoDuration(rawGpsData[rawGpsData.length - 1].cts / 1000);
+            setAppState(AppState.READY);
+          }
+        );
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error(err);
+        setAppState(AppState.ERROR);
+      });
+  };
+
   const { getRootProps, getInputProps } = useDropzone({
-    onDrop: (acceptedFiles: any) => {
+    onDrop<AcceptedFiles extends FileWithPath[]>(acceptedFiles: AcceptedFiles) {
+      if (acceptedFiles.length === 0) return;
+      if (acceptedFiles[0].path === undefined) return;
       setVideoPath(acceptedFiles[0].path);
       setVideoUrl(URL.createObjectURL(acceptedFiles[0]));
       extractGpsData(acceptedFiles[0]);
@@ -371,234 +505,9 @@ function App() {
     setAppState(AppState.IDLE);
   };
 
-  const loadMarkersFromCSV = async () => {
-    const confirmed = await confirm(
-      "Are you sure you want to load markers from a CSV file? This will overwrite any existing markers.",
-      "Load Markers"
-    );
-    if (!confirmed) return;
-    open({
-      multiple: false,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    }).then(async (selected) => {
-      if (!selected) return;
-      const file = await readTextFile(selected as string);
-      const parsed = file.split("\n").map((line: string) => {
-        const [lat, lng, cts] = line.split(",");
-        return {
-          lat: parseFloat(lat),
-          lng: parseFloat(lng),
-          cts: parseInt(cts),
-        };
-      });
-      const newMarkers = parsed.map((data: any, id: number) => (
-        <GPSMarker
-          id={id}
-          value={data}
-          moveMarker={handleMarkerDrag}
-          removeMarker={removeMarker}
-          setIsDragging={setIsDragging}
-          color={MarkerBlue}
-        />
-      ));
-      setMarkers(newMarkers);
-    });
-  };
-
-  const snapMarkers = async () => {
-    const confirmed = await confirm(
-      "Are you sure you want snap the markers? This will change the temporal position of the markers.",
-      "Snap Markers"
-    );
-    if (!confirmed) return;
-    setMarkers((prevMarkers: any) => {
-      const newMarkers = [...prevMarkers];
-      newMarkers.forEach((marker: any) => {
-        if (!marker) return;
-        const value = marker.props.value;
-        const distances = gpsData.map((gps: any) => {
-          return Math.sqrt(
-            (gps.lat - value.lat) ** 2 + (gps.lng - value.lng) ** 2
-          );
-        });
-        const minimumDistance = Math.min(...distances);
-        // We don't snap if the closest point is more than 5 meters away
-        // this is of course an approximation, but it's good enough
-        if (minimumDistance * 6371000 * 3.1415 / 180 > 5) return;
-        const closestGPS = gpsData[distances.indexOf(minimumDistance)];
-        if (!closestGPS) return;
-        value.cts = closestGPS.cts;
-      });
-      return newMarkers;
-    });
-  };
-
-  const extractGpsData = async (file: any) => {
-    setAppState(AppState.VIDEO_LOADING);
-    return GPMFExtract(file, {
-      browserMode: true,
-    })
-      .then((extracted) => {
-        setAppState(AppState.GPS_LOADING);
-        return GoProTelemetry(
-          extracted,
-          {
-            stream: ["GPS"],
-          },
-          (telemetry: any) => {
-            // get the first device
-            const { streams } = telemetry[Object.keys(telemetry)[0]];
-            const gpsStream = streams[Object.keys(streams)[0]].samples;
-            const gpsData = gpsStream.reduce(
-              (acc: any, sample: any, idx: number) => {
-                // subsample every 4th point
-                if (idx % 4 !== 0 || idx === gpsStream.length - 1) {
-                  acc.push({
-                    lat: sample.value[0],
-                    lng: sample.value[1],
-                    cts: sample.cts,
-                  });
-                }
-                return acc;
-              },
-              []
-            );
-            // add absolute acceleration (does not need to be in meters) as "acc" property
-            const speeds = gpsData.map((data: any, i: number) => {
-              if (i === 0) return 0;
-              const prevData = gpsData[i - 1];
-              // just estimate the distance as if it was Euclidean
-              const distance = Math.sqrt(
-                (data.lat - prevData.lat) ** 2 + (data.lng - prevData.lng) ** 2
-              );
-              const time = data.cts - prevData.cts;
-              return distance / time;
-            });
-            gpsData.forEach((data: any, i: number) => {
-              if (i === 0) {
-                data.acc = 0;
-                return;
-              }
-              data.acc =
-                Math.abs(speeds[i] - speeds[i - 1]) /
-                (data.cts - gpsData[i - 1].cts);
-            });
-            // sort the acc and find the 99th percentile
-            const sortedAcc = gpsData
-              .map((data: any) => data.acc)
-              .sort((a: number, b: number) => a - b);
-            const acc99Perc = sortedAcc[Math.floor(sortedAcc.length * 0.99)];
-            setAcc99Perc(acc99Perc);
-            setGpsData(gpsData);
-            setVideoDuration(gpsData[gpsData.length - 1].cts / 1000);
-            setAppState(AppState.READY);
-          }
-        );
-      })
-      .catch((err) => {
-        console.error(err);
-        setAppState(AppState.ERROR);
-      });
-  };
-
-  const onVideoProgress = useCallback(
-    (playedSeconds: number) => {
-      setCurrentCTS(Math.round(playedSeconds * 1000));
-    },
-    [setCurrentCTS]
-  );
-
-  const goToCTS = useCallback(
-    (cts: number) => {
-      if (playerRef.current) {
-        playerRef.current.seekTo(cts / 1000, "seconds");
-      }
-    },
-    [playerRef.current]
-  );
-
-  const generateSpline = (values: any, targets: any) => {
-    // sort values by cts
-    values.sort((a: any, b: any) => a.cts - b.cts);
-    const { lats, lngs, xs } = values.reduce(
-      (acc: any, value: any) => {
-        acc.lats.push(value.lat);
-        acc.lngs.push(value.lng);
-        acc.xs.push(value.cts);
-        return acc;
-      },
-      {
-        lats: [],
-        lngs: [],
-        xs: [],
-      }
-    );
-
-    const latSpline = new CubicSpline(xs, lats);
-    const lngSpline = new CubicSpline(xs, lngs);
-
-    // interpolate for all gps data cts
-    const max = Math.max(...xs);
-    const min = Math.min(...xs);
-    const target_xs = targets.filter((x: number) => {
-      return x >= min && x <= max;
-    });
-
-    // Generate an array of lat/lng points along the spline
-    const splinePoints = target_xs.map((cts: number) => {
-      const lat = latSpline.at(cts);
-      const lng = lngSpline.at(cts);
-      return { lat, lng, cts };
-    });
-
-    return splinePoints;
-  };
-
-  useEffect(() => {
-    if (!markers.length || !gpsData.length) return;
-    let splinePoints = [];
-    const cleanMarkers = markers.filter((marker: any) => marker);
-    if (cleanMarkers.length >= 2) {
-      splinePoints = generateSpline(
-        cleanMarkers.map((data: any) => data.props.value),
-        gpsData.map((data: any) => data.cts)
-      );
-    }
-    setSplineData(splinePoints as any);
-  }, [markers, gpsData]);
-
-  useEffect(() => {
-    setOriginalMarkers((prevMarkers: any) => {
-      const newMarkers = [...prevMarkers];
-      gpsData.map((value, i) => {
-        let color;
-        if (value.cts <= currentCTS) {
-          color = MarkerRed;
-        } else {
-          color = MarkerGray;
-        }
-        // check if color prop changed
-        if (!newMarkers[i] || newMarkers[i].props.color !== color) {
-          newMarkers[i] = (
-            <GPSMarker
-              key={i}
-              id={i}
-              value={value}
-              isOriginal
-              acc99Perc={acc99Perc}
-              goToCTS={goToCTS}
-              color={color}
-            />
-          );
-        }
-      });
-      return newMarkers;
-    });
-  }, [currentCTS, gpsData, goToCTS]);
-
   const removeMarker = useCallback(
     (id: number) => {
-      setMarkers((prevMarkers: any) => {
+      setMarkers((prevMarkers) => {
         const newMarkers = [...prevMarkers];
         // ensure that the id that is being removed is the same as the id of the marker
         if (!newMarkers[id]) return newMarkers;
@@ -612,8 +521,8 @@ function App() {
   );
 
   const handleMarkerDrag = useCallback(
-    (id: number, position: any) => {
-      setMarkers((prevMarkers: any) => {
+    (id: number, position: LatLng) => {
+      setMarkers((prevMarkers) => {
         const newMarkers = [...prevMarkers];
         const marker = newMarkers[id];
         if (!marker) return newMarkers;
@@ -635,19 +544,177 @@ function App() {
         return newMarkers;
       });
     },
-    [currentCTS, setMarkers]
+    [removeMarker]
   );
 
+  const loadMarkersFromCSV = async () => {
+    const confirmed = await confirm(
+      "Are you sure you want to load markers from a CSV file? This will overwrite any existing markers.",
+      "Load Markers"
+    );
+    if (!confirmed) return;
+    open({
+      multiple: false,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    }).then(async (selected) => {
+      if (!selected) return;
+      const file = await readTextFile(selected as string);
+      const lines = file.split("\n");
+      // check if the first line is a header, remove it if it is
+      if (lines[0].includes("lat,lng,cts")) lines.shift();
+      const parsed = file.split("\n").map((line: string) => {
+        const [lat, lng, cts] = line.split(",");
+        return {
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
+          cts: parseInt(cts, 10),
+        };
+      });
+      const newMarkers = parsed.map((data, id: number) => (
+        <GPSMarker
+          id={id}
+          value={data}
+          moveMarker={handleMarkerDrag}
+          removeMarker={removeMarker}
+          setIsDragging={setIsDragging}
+          color={MarkerBlue}
+        />
+      ));
+      setMarkers(newMarkers);
+    });
+  };
+
+  const snapMarkers = async () => {
+    const confirmed = await confirm(
+      "Are you sure you want snap the markers? This will change the temporal position of the markers.",
+      "Snap Markers"
+    );
+    if (!confirmed) return;
+    setMarkers((prevMarkers) => {
+      const newMarkers = [...prevMarkers];
+      newMarkers.forEach((marker) => {
+        if (!marker) return;
+        const { value } = marker.props;
+        const distances = gpsData.map((gps) => {
+          return Math.sqrt(
+            (gps.lat - value.lat) ** 2 + (gps.lng - value.lng) ** 2
+          );
+        });
+        const minimumDistance = Math.min(...distances);
+        // We don't snap if the closest point is more than 5 meters away
+        // this is of course an approximation, but it's good enough
+        if ((minimumDistance * 6371000 * 3.1415) / 180 > 10) return;
+        const closestGPS = gpsData[distances.indexOf(minimumDistance)];
+        if (!closestGPS) return;
+        value.cts = closestGPS.cts;
+      });
+      return newMarkers;
+    });
+  };
+
+  const onVideoProgress = useCallback(
+    (playedSeconds: number) => {
+      setCurrentCTS(Math.round(playedSeconds * 1000));
+    },
+    [setCurrentCTS]
+  );
+
+  const goToCTS = useCallback((cts: number) => {
+    if (playerRef.current) {
+      playerRef.current.seekTo(cts / 1000, "seconds");
+    }
+  }, []);
+
+  const generateSpline = (values: GPSMarkerData[], targets: number[]) => {
+    // sort values by cts
+    values.sort((a, b) => a.cts - b.cts);
+    const { lats, lngs, xs } = values.reduce(
+      (acc: { lats: number[]; lngs: number[]; xs: number[] }, value) => {
+        acc.lats.push(value.lat);
+        acc.lngs.push(value.lng);
+        acc.xs.push(value.cts);
+        return acc;
+      },
+      {
+        lats: [],
+        lngs: [],
+        xs: [],
+      }
+    );
+
+    const latSpline = new CubicSpline(xs, lats);
+    const lngSpline = new CubicSpline(xs, lngs);
+
+    // interpolate for all gps data cts
+    const max = Math.max(...xs);
+    const min = Math.min(...xs);
+    const targetXs = targets.filter((x: number) => {
+      return x >= min && x <= max;
+    });
+
+    // Generate an array of lat/lng points along the spline
+    const splinePoints = targetXs.map((cts: number) => {
+      const lat = latSpline.at(cts);
+      const lng = lngSpline.at(cts);
+      return { lat, lng, cts };
+    });
+
+    return splinePoints;
+  };
+
+  useEffect(() => {
+    if (!markers.length || !gpsData.length) return;
+    let splinePoints: GPSMarkerData[] = [];
+    const cleanMarkers = markers.filter((marker) => marker);
+    if (cleanMarkers.length >= 2) {
+      splinePoints = generateSpline(
+        cleanMarkers.map((data) => data.props.value),
+        gpsData.map((data) => data.cts)
+      );
+    }
+    setSplineData(splinePoints);
+  }, [markers, gpsData]);
+
+  useEffect(() => {
+    setOriginalMarkers((prevMarkers) => {
+      const newMarkers = [...prevMarkers];
+      gpsData.forEach((value: GPSMarkerData, i: number) => {
+        let color;
+        if (value.cts <= currentCTS) {
+          color = MarkerRed;
+        } else {
+          color = MarkerGray;
+        }
+        // check if color prop changed
+        if (!newMarkers[i] || newMarkers[i].props.color !== color) {
+          newMarkers[i] = (
+            <GPSMarker
+              // eslint-disable-next-line react/no-array-index-key
+              key={i}
+              id={i}
+              value={value}
+              isOriginal
+              acc99Perc={acc99Perc}
+              goToCTS={goToCTS}
+              color={color}
+            />
+          );
+        }
+      });
+      return newMarkers;
+    });
+  }, [currentCTS, gpsData, goToCTS, acc99Perc]);
+
   const createMarker = useCallback(
-    (position: any) => {
-      setMarkers((prevMarkers: any) => {
+    (position: LatLng) => {
+      setMarkers((prevMarkers) => {
         const value = {
           lat: position.lat,
           lng: position.lng,
           cts: currentCTS,
         };
         const idx = prevMarkers.findIndex(
-          (data: any) => data && data.props.value.cts === currentCTS
+          (data) => data && data.props.value.cts === currentCTS
         );
         const id = idx !== -1 ? idx : prevMarkers.length;
         const newMarker = (
@@ -671,23 +738,26 @@ function App() {
   const saveData = () => {
     // save data to the same video path except with .csv extension
     if (!videoPath) return;
-    const cleanMarkers = markers.filter((marker: any) => marker);
+    const cleanMarkers = markers.filter((marker) => marker);
     const csvPath = videoPath.replace(/\.[^/.]+$/, ".csv");
-    const csvData = cleanMarkers.map((marker: any) => {
+    const csvHeaders = "lat,lng,cts(ms)\n";
+    const csvData = cleanMarkers.map((marker) => {
       const data = marker.props.value;
       return `${data.lat},${data.lng},${data.cts}`;
     });
-    const csvContent = csvData.join("\n");
+    const csvContent = csvHeaders + csvData.join("\n");
     // save with dialog
     save({
       title: "Save GPS data",
       defaultPath: csvPath,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     })
-      .then((result: any) => {
+      .then((result: string | null) => {
+        if (!result) return;
         writeTextFile(result, csvContent);
       })
-      .catch((err: any) => {
+      .catch((err: Error) => {
+        // eslint-disable-next-line no-console
         console.error(err);
       });
   };
@@ -695,7 +765,9 @@ function App() {
   return (
     <Container>
       {!videoUrl && (
+        // eslint-disable-next-line react/jsx-props-no-spreading
         <DropZone {...getRootProps()}>
+          {/* eslint-disable-next-line react/jsx-props-no-spreading */}
           <input {...getInputProps()} />
           <p>Click to select file</p>
         </DropZone>
@@ -728,7 +800,7 @@ function App() {
                   maxNativeZoom={19}
                   maxZoom={23}
                 />
-                {originalMarkers}
+                {...originalMarkers}
                 <MapContent
                   currentCTS={currentCTS}
                   gpsData={gpsData}
