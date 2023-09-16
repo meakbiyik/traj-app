@@ -16,9 +16,9 @@ import GoProTelemetry from "gopro-telemetry";
 import { confirm, save, open } from "@tauri-apps/api/dialog";
 import { writeTextFile, readTextFile } from "@tauri-apps/api/fs";
 import L, { DragEndEvent, LatLng, LeafletMouseEvent } from "leaflet";
-import MarkerRed from "../public/marker-red.svg";
-import MarkerGray from "../public/marker-gray.svg";
-import MarkerBlue from "../public/marker-blue.svg";
+import MarkerRed from "../res/marker-red.svg";
+import MarkerGray from "../res/marker-gray.svg";
+import MarkerBlue from "../res/marker-blue.svg";
 
 enum AppState {
   IDLE,
@@ -420,7 +420,11 @@ function App() {
               return;
             }
             const gpsStreamSamples = gpsStream.samples;
+            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+            // @ts-ignore // the types are wonky
             let rawGpsData: GPSMarkerData[] = gpsStreamSamples.reduce(
+              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+              // @ts-ignore
               (acc: GPSMarkerData[], sample, idx: number) => {
                 // subsample every 4th point
                 if (idx % 4 !== 0 || idx === gpsStreamSamples.length - 1) {
