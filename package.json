@@ -1,7 +1,7 @@
 {
   "name": "trajapp",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.5.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
