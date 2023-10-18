@@ -566,7 +566,7 @@ function App() {
       const lines = file.split("\n");
       // check if the first line is a header, remove it if it is
       if (lines[0].includes("lat,lng,cts")) lines.shift();
-      const parsed = file.split("\n").map((line: string) => {
+      const parsed = lines.map((line: string) => {
         const [lat, lng, cts] = line.split(",");
         return {
           lat: parseFloat(lat),
