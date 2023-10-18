@@ -111,9 +111,9 @@ const CloseButton = styled(Button)`
   margin-top: auto;
 `;
 
-const AppStateIndicator = styled.div`
+const AppStateIndicator = styled.div<{ state: AppState }>`
   font-weight: bold;
-  color: ${(props: { state: AppState }) => {
+  color: ${(props) => {
     switch (props.state) {
       case AppState.IDLE:
         return "black";
@@ -175,7 +175,7 @@ function GPSMarker({
   if (isOriginal) {
     if (acc99Perc === undefined || value.acc === undefined)
       throw new Error(
-        "acc99Perc or value.acc is undefined despite being original"
+        "acc99Perc or value.acc is undefined despite being original",
       );
     if (goToCTS === undefined)
       throw new Error("goToCTS is undefined despite being original");
@@ -185,7 +185,7 @@ function GPSMarker({
     setIsDragging === undefined
   )
     throw new Error(
-      "moveMarker, removeMarker or setIsDragging is undefined despite not being original"
+      "moveMarker, removeMarker or setIsDragging is undefined despite not being original",
     );
 
   // clone the icon so that we can change the size
@@ -271,7 +271,7 @@ function MapContent({
   useEffect(() => {
     if (gpsData.length === 0) return;
     let currentPointGPS = gpsData.find(
-      (data: GPSMarkerData) => data.cts >= currentCTS
+      (data: GPSMarkerData) => data.cts >= currentCTS,
     );
     if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
     map.setView([currentPointGPS.lat, currentPointGPS.lng]);
@@ -291,7 +291,7 @@ function MapContent({
     .filter(
       (data) =>
         data.cts > cleanMarkerVals[1].cts &&
-        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts
+        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
     )
     .map((data): L.LatLngExpression => [data.lat, data.lng]);
 
@@ -371,7 +371,7 @@ function App() {
     React.ReactElement<GPSMarkerProps>[]
   >([]);
   const [markers, setMarkers] = useState<React.ReactElement<GPSMarkerProps>[]>(
-    []
+    [],
   );
   const playerRef = useRef<ReactPlayer>(null);
 
@@ -436,7 +436,7 @@ function App() {
                 }
                 return acc;
               },
-              []
+              [],
             );
             // add absolute acceleration (does not need to be in meters) as "acc" property
             const speeds = rawGpsData.map((data: GPSMarkerData, i: number) => {
@@ -444,7 +444,7 @@ function App() {
               const prevData = rawGpsData[i - 1];
               // just estimate the distance as if it was Euclidean
               const distance = Math.sqrt(
-                (data.lat - prevData.lat) ** 2 + (data.lng - prevData.lng) ** 2
+                (data.lat - prevData.lat) ** 2 + (data.lng - prevData.lng) ** 2,
               );
               const time = data.cts - prevData.cts;
               return distance / time;
@@ -470,7 +470,7 @@ function App() {
             setGpsData(rawGpsData);
             setVideoDuration(rawGpsData[rawGpsData.length - 1].cts / 1000);
             setAppState(AppState.READY);
-          }
+          },
         );
       })
       .catch((err) => {
@@ -496,7 +496,7 @@ function App() {
   const closeVideo = async () => {
     const confirmed = await confirm(
       "Are you sure you want to close the video?",
-      "Close Video"
+      "Close Video",
     );
     if (!confirmed) return;
     setVideoUrl(null);
@@ -521,7 +521,7 @@ function App() {
         return newMarkers;
       });
     },
-    [setMarkers]
+    [setMarkers],
   );
 
   const handleMarkerDrag = useCallback(
@@ -548,13 +548,13 @@ function App() {
         return newMarkers;
       });
     },
-    [removeMarker]
+    [removeMarker],
   );
 
   const loadMarkersFromCSV = async () => {
     const confirmed = await confirm(
       "Are you sure you want to load markers from a CSV file? This will overwrite any existing markers.",
-      "Load Markers"
+      "Load Markers",
     );
     if (!confirmed) return;
     open({
@@ -588,39 +588,11 @@ function App() {
     });
   };
 
-  const snapMarkers = async () => {
-    const confirmed = await confirm(
-      "Are you sure you want snap the markers? This will change the temporal position of the markers.",
-      "Snap Markers"
-    );
-    if (!confirmed) return;
-    setMarkers((prevMarkers) => {
-      const newMarkers = [...prevMarkers];
-      newMarkers.forEach((marker) => {
-        if (!marker) return;
-        const { value } = marker.props;
-        const distances = gpsData.map((gps) => {
-          return Math.sqrt(
-            (gps.lat - value.lat) ** 2 + (gps.lng - value.lng) ** 2
-          );
-        });
-        const minimumDistance = Math.min(...distances);
-        // We don't snap if the closest point is more than 5 meters away
-        // this is of course an approximation, but it's good enough
-        if ((minimumDistance * 6371000 * 3.1415) / 180 > 10) return;
-        const closestGPS = gpsData[distances.indexOf(minimumDistance)];
-        if (!closestGPS) return;
-        value.cts = closestGPS.cts;
-      });
-      return newMarkers;
-    });
-  };
-
   const onVideoProgress = useCallback(
     (playedSeconds: number) => {
       setCurrentCTS(Math.round(playedSeconds * 1000));
     },
-    [setCurrentCTS]
+    [setCurrentCTS],
   );
 
   const goToCTS = useCallback((cts: number) => {
@@ -643,7 +615,7 @@ function App() {
         lats: [],
         lngs: [],
         xs: [],
-      }
+      },
     );
 
     const latSpline = new CubicSpline(xs, lats);
@@ -673,7 +645,7 @@ function App() {
     if (cleanMarkers.length >= 2) {
       splinePoints = generateSpline(
         cleanMarkers.map((data) => data.props.value),
-        gpsData.map((data) => data.cts)
+        gpsData.map((data) => data.cts),
       );
     }
     setSplineData(splinePoints);
@@ -718,7 +690,7 @@ function App() {
           cts: currentCTS,
         };
         const idx = prevMarkers.findIndex(
-          (data) => data && data.props.value.cts === currentCTS
+          (data) => data && data.props.value.cts === currentCTS,
         );
         const id = idx !== -1 ? idx : prevMarkers.length;
         const newMarker = (
@@ -736,7 +708,7 @@ function App() {
         return newMarkers;
       });
     },
-    [currentCTS, setMarkers, handleMarkerDrag, removeMarker]
+    [currentCTS, setMarkers, handleMarkerDrag, removeMarker],
   );
 
   const saveData = () => {
@@ -845,13 +817,6 @@ function App() {
                 title="Load markers from a CSV file. This will overwrite any existing markers."
               >
                 Load from file
-              </Button>
-              <Button
-                onClick={snapMarkers}
-                disabled={appState !== AppState.READY}
-                title="Temporally snap the added (blue) markers to the closest GPS point"
-              >
-                Snap to GPS
               </Button>
             </SeekButtons>
             <Instructions>
