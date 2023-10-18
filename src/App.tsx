@@ -293,19 +293,28 @@ function MapContent({
         data.cts > cleanMarkerVals[1].cts &&
         data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
     )
-    .map((data): L.LatLngExpression => [data.lat, data.lng]);
+    .map((data): L.LatLngTuple => [data.lat, data.lng]);
+
+  const Polylines = splinePositions.slice(0, -3).map((_, index) => {
+    // color according to the speed. Green for slow and red for fast. 0=green, 1e-9=red
+    const diff =
+      (splinePositions[index + 3][0] - splinePositions[index][0]) ** 2 +
+      (splinePositions[index + 3][1] - splinePositions[index][1]) ** 2;
+    const color = Math.min(1, diff / 3 / 2e-10);
+    return (
+      <Polyline
+        pathOptions={{ color: `rgb(${255 * (1 - color)}, ${255 * color}, 0)` }}
+        positions={[splinePositions[index], splinePositions[index + 1]]}
+      />
+    );
+  });
 
   return (
     <>
       {splineData && cleanMarkerVals.length > 1 && (
         <>
           {/* render the spline for all points except the first and last two */}
-          {cleanMarkerVals.length > 3 && (
-            <Polyline
-              pathOptions={{ color: "green" }}
-              positions={splinePositions}
-            />
-          )}
+          {cleanMarkerVals.length > 3 && Polylines}
           {/* render a line for the first/last two points */}
           <Polyline
             pathOptions={{ color: "green" }}
@@ -426,8 +435,8 @@ function App() {
               // eslint-disable-next-line @typescript-eslint/ban-ts-comment
               // @ts-ignore
               (acc: GPSMarkerData[], sample, idx: number) => {
-                // subsample every 4th point
-                if (idx % 4 !== 0 || idx === gpsStreamSamples.length - 1) {
+                // subsample every 8th point
+                if (idx % 8 !== 0 || idx === gpsStreamSamples.length - 1) {
                   acc.push({
                     lat: sample.value[0],
                     lng: sample.value[1],
@@ -774,7 +783,7 @@ function App() {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
                   maxNativeZoom={19}
-                  maxZoom={23}
+                  maxZoom={24}
                 />
                 {...originalMarkers}
                 <MapContent
