@@ -1,13 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import ReactPlayer from "react-player";
-import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  useMapEvents,
-  useMap,
-  Polyline,
-} from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Polyline } from "react-leaflet";
 import { useDropzone, FileWithPath } from "react-dropzone";
 import styled from "styled-components";
 import CubicSpline from "typescript-cubic-spline";
@@ -19,6 +12,7 @@ import L, { DragEndEvent, LatLng, LeafletMouseEvent } from "leaflet";
 import MarkerRed from "../res/marker-red.svg";
 import MarkerGray from "../res/marker-gray.svg";
 import MarkerBlue from "../res/marker-blue.svg";
+import MarkerWhite from "../res/marker-white.svg";
 
 enum AppState {
   IDLE,
@@ -144,6 +138,16 @@ const MarkerWrapper = styled.div`
   cursor: none;
 `;
 
+const LayerTypeSelector = styled.div`
+  position: absolute;
+  bottom: 0px;
+  left: 0px;
+  z-index: 1000;
+  background-color: white;
+  padding: 5px 8px;
+  border-radius: 0px 5px 0px 0px;
+`;
+
 const Icon = new L.Icon({
   iconUrl: MarkerGray,
   iconSize: [10, 10],
@@ -239,126 +243,6 @@ function GPSMarker({
   );
 }
 
-function MapContent({
-  currentCTS,
-  gpsData,
-  splineData,
-  markers,
-  createMarker,
-  isDragging,
-}: {
-  currentCTS: number;
-  gpsData: GPSMarkerData[];
-  splineData: GPSMarkerData[];
-  markers: React.ReactElement<GPSMarkerProps>[];
-  createMarker: (position: LatLng) => void;
-  isDragging: boolean;
-}) {
-  const map = useMap();
-  useMapEvents({
-    click: (e: LeafletMouseEvent) => {
-      // only if left mouse button
-      if (e.originalEvent.button !== 0) return;
-      if (!isDragging) createMarker(e.latlng);
-    },
-    contextmenu: (e: LeafletMouseEvent) => {
-      // https://gis.stackexchange.com/questions/41759/how-do-i-stop-event-propagation-with-rightclick-on-leaflet-marker
-      L.DomEvent.stopPropagation(e);
-      e.originalEvent.preventDefault();
-    },
-  });
-
-  useEffect(() => {
-    if (gpsData.length === 0) return;
-    let currentPointGPS = gpsData.find(
-      (data: GPSMarkerData) => data.cts >= currentCTS,
-    );
-    if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
-    map.setView([currentPointGPS.lat, currentPointGPS.lng]);
-  }, [currentCTS, gpsData, map]);
-
-  if (gpsData.length === 0) return null;
-
-  // Although we fit the spline for all points, we do not render the cubic
-  // spline for last two and first two points to prevent rendering
-  // edge effects. Instead, we render a line at those ranges.
-  const cleanMarkerVals = markers
-    .filter((marker) => marker)
-    .map((marker) => marker.props.value)
-    .sort((a, b) => a.cts - b.cts);
-
-  const splinePositions = splineData
-    .filter(
-      (data) =>
-        data.cts > cleanMarkerVals[1].cts &&
-        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
-    )
-    .map((data): L.LatLngTuple => [data.lat, data.lng]);
-
-  const Polylines = splinePositions.slice(0, -3).map((_, index) => {
-    // color according to the speed. Green for slow and red for fast. 0=green, 1e-9=red
-    const diff =
-      (splinePositions[index + 3][0] - splinePositions[index][0]) ** 2 +
-      (splinePositions[index + 3][1] - splinePositions[index][1]) ** 2;
-    const color = Math.min(1, diff / 3 / 2e-10);
-    return (
-      <Polyline
-        pathOptions={{ color: `rgb(${255 * (1 - color)}, ${255 * color}, 0)` }}
-        positions={[splinePositions[index], splinePositions[index + 1]]}
-      />
-    );
-  });
-
-  return (
-    <>
-      {splineData && cleanMarkerVals.length > 1 && (
-        <>
-          {/* render the spline for all points except the first and last two */}
-          {cleanMarkerVals.length > 3 && Polylines}
-          {/* render a line for the first/last two points */}
-          <Polyline
-            pathOptions={{ color: "green" }}
-            positions={[
-              [cleanMarkerVals[0].lat, cleanMarkerVals[0].lng],
-              [cleanMarkerVals[1].lat, cleanMarkerVals[1].lng],
-            ]}
-          />
-          {cleanMarkerVals.length > 2 && (
-            <Polyline
-              pathOptions={{ color: "green" }}
-              positions={[
-                [
-                  cleanMarkerVals[cleanMarkerVals.length - 2].lat,
-                  cleanMarkerVals[cleanMarkerVals.length - 2].lng,
-                ],
-                [
-                  cleanMarkerVals[cleanMarkerVals.length - 1].lat,
-                  cleanMarkerVals[cleanMarkerVals.length - 1].lng,
-                ],
-              ]}
-            />
-          )}
-        </>
-      )}
-      {markers.map((data) => {
-        if (!data) return null;
-        let closestGPS = gpsData.find((gps) => gps.cts >= data.props.value.cts);
-        if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
-        return (
-          <Polyline
-            pathOptions={{ color: "blue", dashArray: "10, 10" }}
-            positions={[
-              [data.props.value.lat, data.props.value.lng],
-              [closestGPS.lat, closestGPS.lng],
-            ]}
-          />
-        );
-      })}
-      {markers}
-    </>
-  );
-}
-
 function App() {
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -383,6 +267,10 @@ function App() {
     [],
   );
   const playerRef = useRef<ReactPlayer>(null);
+  const [layerType, setLayerType] = useState<
+    "streets" | "satellite" | "alt_satellite"
+  >("streets");
+  const [map, setMap] = useState<L.Map | null>(null);
 
   const saveRequirementsAreNotMet = useCallback(() => {
     if (!videoPath) return "No video file selected";
@@ -435,8 +323,8 @@ function App() {
               // eslint-disable-next-line @typescript-eslint/ban-ts-comment
               // @ts-ignore
               (acc: GPSMarkerData[], sample, idx: number) => {
-                // subsample every 8th point
-                if (idx % 8 !== 0 || idx === gpsStreamSamples.length - 1) {
+                // subsample every 10th point
+                if (idx % 10 !== 0 || idx === gpsStreamSamples.length - 1) {
                   acc.push({
                     lat: sample.value[0],
                     lng: sample.value[1],
@@ -650,7 +538,7 @@ function App() {
   useEffect(() => {
     if (!markers.length || !gpsData.length) return;
     let splinePoints: GPSMarkerData[] = [];
-    const cleanMarkers = markers.filter((marker) => marker);
+    const cleanMarkers = markers.filter((marker) => marker); // this is to remove undefined elements
     if (cleanMarkers.length >= 2) {
       splinePoints = generateSpline(
         cleanMarkers.map((data) => data.props.value),
@@ -668,7 +556,7 @@ function App() {
         if (value.cts <= currentCTS) {
           color = MarkerRed;
         } else {
-          color = MarkerGray;
+          color = layerType === "streets" ? MarkerGray : MarkerWhite;
         }
         // check if color prop changed
         if (!newMarkers[i] || newMarkers[i].props.color !== color) {
@@ -688,7 +576,7 @@ function App() {
       });
       return newMarkers;
     });
-  }, [currentCTS, gpsData, goToCTS, acc99Perc]);
+  }, [currentCTS, gpsData, goToCTS, acc99Perc, layerType]);
 
   const createMarker = useCallback(
     (position: LatLng) => {
@@ -747,6 +635,111 @@ function App() {
       });
   };
 
+  // See https://leaflet-extras.github.io/leaflet-providers/preview/index.html
+  // for more map layers
+  const layerProps = {
+    maxNativeZoom: 19,
+    maxZoom: 24,
+    // improve performance
+    updateWhenZooming: false,
+    updateWhenIdle: true,
+  };
+  let mapLayer;
+  if (layerType === "streets") {
+    mapLayer = (
+      <TileLayer
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+        // eslint-disable-next-line react/jsx-props-no-spreading
+        {...layerProps}
+      />
+    );
+  } else if (layerType === "satellite") {
+    mapLayer = (
+      <TileLayer
+        url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg"
+        attribution='&copy; <a href="https://www.swisstopo.admin.ch/">swisstopo</a>'
+        minZoom={2}
+        // eslint-disable-next-line react/jsx-props-no-spreading
+        {...layerProps}
+      />
+    );
+  } else if (layerType === "alt_satellite") {
+    mapLayer = (
+      <TileLayer
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+        // eslint-disable-next-line react/jsx-props-no-spreading
+        {...layerProps}
+      />
+    );
+  }
+
+  // filter original markers according to map bounds
+  useEffect(() => {
+    if (!map) return undefined;
+    const clickHandler = (e: LeafletMouseEvent) => {
+      // only if left mouse button
+      if (e.originalEvent.button !== 0) return;
+      if (!isDragging) createMarker(e.latlng);
+    };
+    const contextMenuHandler = (e: LeafletMouseEvent) => {
+      // https://gis.stackexchange.com/questions/41759/how-do-i-stop-event-propagation-with-rightclick-on-leaflet-marker
+      L.DomEvent.stopPropagation(e);
+      e.originalEvent.preventDefault();
+    };
+    map.on("click", clickHandler);
+    map.on("contextmenu", contextMenuHandler);
+    return () => {
+      map.off("click", clickHandler);
+      map.off("contextmenu", contextMenuHandler);
+    };
+  }, [createMarker, isDragging, map]);
+
+  // Although we fit the spline for all points, we do not render the cubic
+  // spline for last two and first two points to prevent rendering
+  // edge effects. Instead, we render a line at those ranges.
+  const cleanMarkerVals = markers
+    .filter((marker) => marker) // this is to remove undefined elements
+    .map((marker) => marker.props.value)
+    .sort((a, b) => a.cts - b.cts);
+
+  const splinePositions = splineData
+    .filter(
+      (data) =>
+        data.cts > cleanMarkerVals[1].cts &&
+        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
+    )
+    .map((data): L.LatLngTuple => [data.lat, data.lng]);
+
+  const Polylines = splinePositions.slice(0, -3).map((_, index) => {
+    // color according to the speed. Green for slow and red for fast. 0=green, 1e-9=red
+    const diff =
+      (splinePositions[index + 3][0] - splinePositions[index][0]) ** 2 +
+      (splinePositions[index + 3][1] - splinePositions[index][1]) ** 2;
+    const color = Math.min(1, diff / 3 / 2e-10);
+    return (
+      <Polyline
+        pathOptions={{ color: `rgb(${255 * (1 - color)}, ${255 * color}, 0)` }}
+        positions={[splinePositions[index], splinePositions[index + 1]]}
+      />
+    );
+  });
+
+  useEffect(() => {
+    if (gpsData.length === 0) return;
+    if (!map) return;
+    let currentPointGPS = gpsData.find(
+      (data: GPSMarkerData) => data.cts >= currentCTS,
+    );
+    if (!currentPointGPS) currentPointGPS = gpsData[gpsData.length - 1];
+    // if the new center is far enough away from the current center, move the map
+    const currentCenter = map.getCenter();
+    const newCenter = L.latLng(currentPointGPS.lat, currentPointGPS.lng);
+    const distance = currentCenter.distanceTo(newCenter);
+    if (distance > 20) map.setView(newCenter);
+  }, [currentCTS, gpsData, map]);
+
   return (
     <Container>
       {!videoUrl && (
@@ -778,23 +771,89 @@ function App() {
                 center={{ lat: 46.947974, lng: 7.447447 }}
                 zoom={18}
                 scrollWheelZoom={false}
+                ref={setMap}
+                preferCanvas
               >
-                <TileLayer
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
-                  maxNativeZoom={19}
-                  maxZoom={24}
-                />
-                {...originalMarkers}
-                <MapContent
-                  currentCTS={currentCTS}
-                  gpsData={gpsData}
-                  splineData={splineData}
-                  markers={markers}
-                  createMarker={createMarker}
-                  isDragging={isDragging}
-                />
+                {mapLayer}
+                {originalMarkers}
+                <>
+                  {splineData && cleanMarkerVals.length > 1 && (
+                    <>
+                      {/* render the spline for all points except the first and last two */}
+                      {cleanMarkerVals.length > 3 && Polylines}
+                      {/* render a line for the first/last two points */}
+                      <Polyline
+                        pathOptions={{ color: "green" }}
+                        positions={[
+                          [cleanMarkerVals[0].lat, cleanMarkerVals[0].lng],
+                          [cleanMarkerVals[1].lat, cleanMarkerVals[1].lng],
+                        ]}
+                      />
+                      {cleanMarkerVals.length > 2 && (
+                        <Polyline
+                          pathOptions={{ color: "green" }}
+                          positions={[
+                            [
+                              cleanMarkerVals[cleanMarkerVals.length - 2].lat,
+                              cleanMarkerVals[cleanMarkerVals.length - 2].lng,
+                            ],
+                            [
+                              cleanMarkerVals[cleanMarkerVals.length - 1].lat,
+                              cleanMarkerVals[cleanMarkerVals.length - 1].lng,
+                            ],
+                          ]}
+                        />
+                      )}
+                    </>
+                  )}
+                  {markers.map((data) => {
+                    if (!data) return null;
+                    let closestGPS = gpsData.find(
+                      (gps) => gps.cts >= data.props.value.cts,
+                    );
+                    if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
+                    return (
+                      <Polyline
+                        pathOptions={{ color: "blue", dashArray: "10, 10" }}
+                        positions={[
+                          [data.props.value.lat, data.props.value.lng],
+                          [closestGPS.lat, closestGPS.lng],
+                        ]}
+                      />
+                    );
+                  })}
+                  {markers}
+                </>
               </MapContainer>
+              <LayerTypeSelector>
+                <label htmlFor="streets">
+                  <input
+                    id="streets"
+                    type="checkbox"
+                    checked={layerType === "streets"}
+                    onChange={() => setLayerType("streets")}
+                  />
+                  Streets
+                </label>
+                <label htmlFor="satellite">
+                  <input
+                    id="satellite"
+                    type="checkbox"
+                    checked={layerType === "satellite"}
+                    onChange={() => setLayerType("satellite")}
+                  />
+                  Satellite
+                </label>
+                <label htmlFor="alt_satellite">
+                  <input
+                    id="alt_satellite"
+                    type="checkbox"
+                    checked={layerType === "alt_satellite"}
+                    onChange={() => setLayerType("alt_satellite")}
+                  />
+                  Alt. Satellite (Esri)
+                </label>
+              </LayerTypeSelector>
             </MapWrapper>
           </Display>
           <Controls>
