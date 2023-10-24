@@ -1,4 +1,11 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useReducer,
+  useMemo,
+} from "react";
 import ReactPlayer from "react-player";
 import { MapContainer, TileLayer, Marker, Polyline } from "react-leaflet";
 import { useDropzone, FileWithPath } from "react-dropzone";
@@ -271,6 +278,10 @@ function App() {
     "streets" | "satellite" | "alt_satellite"
   >("streets");
   const [map, setMap] = useState<L.Map | null>(null);
+  const [areBoundsUpdated, forceUpdateBounds] = useReducer((x) => x + 1, 0) as [
+    number,
+    () => void,
+  ];
 
   const saveRequirementsAreNotMet = useCallback(() => {
     if (!videoPath) return "No video file selected";
@@ -688,43 +699,50 @@ function App() {
       L.DomEvent.stopPropagation(e);
       e.originalEvent.preventDefault();
     };
+    const areBoundsUpdatedHandler = () => {
+      forceUpdateBounds();
+    };
     map.on("click", clickHandler);
     map.on("contextmenu", contextMenuHandler);
+    map.on("moveend", areBoundsUpdatedHandler);
     return () => {
       map.off("click", clickHandler);
       map.off("contextmenu", contextMenuHandler);
+      map.off("moveend", areBoundsUpdatedHandler);
     };
   }, [createMarker, isDragging, map]);
 
-  // Although we fit the spline for all points, we do not render the cubic
-  // spline for last two and first two points to prevent rendering
-  // edge effects. Instead, we render a line at those ranges.
-  const cleanMarkerVals = markers
-    .filter((marker) => marker) // this is to remove undefined elements
-    .map((marker) => marker.props.value)
-    .sort((a, b) => a.cts - b.cts);
-
-  const splinePositions = splineData
-    .filter(
-      (data) =>
-        data.cts > cleanMarkerVals[1].cts &&
-        data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
-    )
-    .map((data): L.LatLngTuple => [data.lat, data.lng]);
-
-  const Polylines = splinePositions.slice(0, -3).map((_, index) => {
-    // color according to the speed. Green for slow and red for fast. 0=green, 1e-9=red
-    const diff =
-      (splinePositions[index + 3][0] - splinePositions[index][0]) ** 2 +
-      (splinePositions[index + 3][1] - splinePositions[index][1]) ** 2;
-    const color = Math.min(1, diff / 3 / 2e-10);
-    return (
-      <Polyline
-        pathOptions={{ color: `rgb(${255 * (1 - color)}, ${255 * color}, 0)` }}
-        positions={[splinePositions[index], splinePositions[index + 1]]}
-      />
-    );
-  });
+  const markerFilter = useCallback(
+    (fullMarkers: React.ReactElement<GPSMarkerProps>[]) => {
+      if (!map) return false;
+      const bounds = map.getBounds();
+      const filteredMarkers = fullMarkers.filter((marker, idx) => {
+        const markerPos = marker.props.value;
+        const markerLatLng = L.latLng(markerPos.lat, markerPos.lng);
+        const isContained = bounds.contains(markerLatLng);
+        if (!isContained) return false;
+        // also undersample depending on zoom level
+        // for zoom levels smaller than 19, only show 10% of markers
+        // for 20, show 50%
+        // for 21, show 100%
+        const zoom = map.getZoom();
+        const zoomFactorMap: { [key: number]: number } = {
+          19: 5,
+          20: 3,
+          21: 2,
+          22: 1,
+          23: 1,
+          24: 1,
+        };
+        const zoomFactor = zoomFactorMap[zoom] || 10;
+        const isSampled = idx % zoomFactor === 0;
+        return isSampled;
+      });
+      return filteredMarkers;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [map, areBoundsUpdated],
+  );
 
   useEffect(() => {
     if (gpsData.length === 0) return;
@@ -739,6 +757,67 @@ function App() {
     const distance = currentCenter.distanceTo(newCenter);
     if (distance > 20) map.setView(newCenter);
   }, [currentCTS, gpsData, map]);
+
+  const visibleOriginalMarkers = useMemo(
+    () => markerFilter(originalMarkers),
+    [originalMarkers, markerFilter],
+  );
+
+  // Although we fit the spline for all points, we do not render the cubic
+  // spline for last two and first two points to prevent rendering
+  // edge effects. Instead, we render a line at those ranges.
+  const cleanMarkerVals = useMemo(
+    () =>
+      markers
+        .filter((marker) => marker) // this is to remove undefined elements
+        .map((marker) => marker.props.value)
+        .sort((a, b) => a.cts - b.cts),
+    [markers],
+  );
+
+  const Polylines = useMemo(() => {
+    const splinePositions = splineData
+      .filter(
+        (data) =>
+          data.cts > cleanMarkerVals[1].cts &&
+          data.cts < cleanMarkerVals[cleanMarkerVals.length - 2].cts,
+      )
+      .map((data): L.LatLngTuple => [data.lat, data.lng]);
+    return splinePositions.slice(0, -3).map((_, index) => {
+      // color according to the speed. Green for slow and red for fast. 0=green, 1e-9=red
+      const diff =
+        (splinePositions[index + 3][0] - splinePositions[index][0]) ** 2 +
+        (splinePositions[index + 3][1] - splinePositions[index][1]) ** 2;
+      const color = Math.min(1, diff / 3 / 2e-10);
+      return (
+        <Polyline
+          pathOptions={{
+            color: `rgb(${255 * (1 - color)}, ${255 * color}, 0)`,
+          }}
+          positions={[splinePositions[index], splinePositions[index + 1]]}
+        />
+      );
+    });
+  }, [splineData, cleanMarkerVals]);
+
+  const TemporalPolylines = useMemo(
+    () =>
+      markers.map((data) => {
+        if (!data) return null;
+        let closestGPS = gpsData.find((gps) => gps.cts >= data.props.value.cts);
+        if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
+        return (
+          <Polyline
+            pathOptions={{ color: "blue", dashArray: "10, 10" }}
+            positions={[
+              [data.props.value.lat, data.props.value.lng],
+              [closestGPS.lat, closestGPS.lng],
+            ]}
+          />
+        );
+      }),
+    [markers, gpsData],
+  );
 
   return (
     <Container>
@@ -775,7 +854,7 @@ function App() {
                 preferCanvas
               >
                 {mapLayer}
-                {originalMarkers}
+                {visibleOriginalMarkers}
                 <>
                   {splineData && cleanMarkerVals.length > 1 && (
                     <>
@@ -806,22 +885,7 @@ function App() {
                       )}
                     </>
                   )}
-                  {markers.map((data) => {
-                    if (!data) return null;
-                    let closestGPS = gpsData.find(
-                      (gps) => gps.cts >= data.props.value.cts,
-                    );
-                    if (!closestGPS) closestGPS = gpsData[gpsData.length - 1];
-                    return (
-                      <Polyline
-                        pathOptions={{ color: "blue", dashArray: "10, 10" }}
-                        positions={[
-                          [data.props.value.lat, data.props.value.lng],
-                          [closestGPS.lat, closestGPS.lng],
-                        ]}
-                      />
-                    );
-                  })}
+                  {TemporalPolylines}
                   {markers}
                 </>
               </MapContainer>
